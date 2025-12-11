@@ -1,0 +1,122 @@
+#include <AccelStepper.h>
+#include <Servo.h>
+
+// ------------ PIN DEFINITIONS ------------
+#define BENDER_STEP 9
+#define BENDER_DIR 10
+#define LIMIT_SWITCH 11
+#define SERVO_PIN 2
+
+#define FEED_STEP 5
+#define FEED_DIR 6
+
+#define Z_STEP 7
+#define Z_DIR 8
+
+// ------------ OBJECTS ------------
+AccelStepper bender(AccelStepper::DRIVER, BENDER_STEP, BENDER_DIR);
+AccelStepper feeder(AccelStepper::DRIVER, FEED_STEP, FEED_DIR);
+AccelStepper twister(AccelStepper::DRIVER, Z_STEP, Z_DIR);
+
+Servo bendServo;
+
+// ------------ CONSTANTS ------------
+const int angleConst = 18;   // 1.8° motor @ 1/32 microsteps
+const int feedLength = 1000; // steps per star segment (adjust as needed)
+
+// ------------ HOMING BENDER ------------
+void homeBender() {
+  Serial.println("Homing bender...");
+  
+  while (digitalRead(LIMIT_SWITCH) == HIGH) {
+    bender.setSpeed(600);
+    bender.runSpeed();
+  }
+
+  bender.setCurrentPosition(0);
+  Serial.println("Bender homed.");
+  delay(300);
+}
+
+// ------------ MOVE FUNCTIONS ------------
+void bendTo(int angleDegrees) {
+  long target = angleDegrees * angleConst;
+  bender.moveTo(target);
+  while (bender.distanceToGo() != 0) {
+    bender.run();
+  }
+}
+
+void feedWire(long steps) {
+  feeder.moveTo(feeder.currentPosition() + steps);
+  while (feeder.distanceToGo() != 0) {
+    feeder.run();
+  }
+}
+
+void rotateZ(long steps) {
+  twister.moveTo(twister.currentPosition() + steps);
+  while (twister.distanceToGo() != 0) {
+    twister.run();
+  }
+}
+
+// ------------ STAR-SHAPE SEQUENCE ------------
+void makeStar() {
+  for (int i = 0; i < 5; i++) {
+    Serial.print("Star point ");
+    Serial.println(i + 1);
+
+    // 1. Feed wire forward
+    feedWire(feedLength);
+
+    // 2. Lower servo (engage bender)
+    bendServo.write(130);
+    delay(300);
+
+    // 3. Bend inward 144 degrees
+    bendTo(144);
+    delay(300);
+
+    // 4. Raise servo
+    bendServo.write(40);
+    delay(300);
+
+    // 5. Return bender to zero for next point
+    bendTo(0);
+    delay(300);
+
+    // 6. Rotate Z-axis slightly (optional)
+    rotateZ(200);  // adjust or remove if not needed
+  }
+
+  Serial.println("Star completed!");
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(LIMIT_SWITCH, INPUT_PULLUP);
+
+  // Stepper settings
+  bender.setMaxSpeed(2000);
+  bender.setAcceleration(1500);
+
+  feeder.setMaxSpeed(1500);
+  feeder.setAcceleration(1200);
+
+  twister.setMaxSpeed(1500);
+  twister.setAcceleration(1200);
+
+  // Servo
+  bendServo.attach(SERVO_PIN);
+  bendServo.write(40); // start up
+
+  delay(500);
+  homeBender();
+}
+
+void loop() {
+  makeStar();
+  delay(3000); // pause then repeat
+}
