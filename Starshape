@@ -1,179 +1,165 @@
 #include <AccelStepper.h>
 #include <Servo.h>
 
-// ------------ PIN DEFINITIONS ------------
-#define BENDER_STEP 9
-#define BENDER_DIR 10
-#define LIMIT_SWITCH 11
-#define SERVO_PIN 2
+// -------------------------
+// HARDWARE CONFIGURATION
+// -------------------------
+AccelStepper feederStepper(AccelStepper::DRIVER, 5, 6);  // Feeder
+AccelStepper zAxisStepper(AccelStepper::DRIVER, 7, 8);    // Z-axis (not used here)
+AccelStepper benderStepper(AccelStepper::DRIVER, 9, 10);  // Bender
 
-#define FEED_STEP 5
-#define FEED_DIR 6
+Servo servo01;
 
-#define Z_STEP 7
-#define Z_DIR 8
+const int limitSwitch = 11;
 
-// ------------ OBJECTS ------------
-AccelStepper bender(AccelStepper::DRIVER, BENDER_STEP, BENDER_DIR);
-AccelStepper feeder(AccelStepper::DRIVER, FEED_STEP, FEED_DIR);
-AccelStepper twister(AccelStepper::DRIVER, Z_STEP, Z_DIR);
+// ----------------------------------
+// SETUP
+// ----------------------------------
+void setup() {
+  Serial.begin(9600);
+  pinMode(limitSwitch, INPUT_PULLUP);
 
-Servo bendServo;
+  servo01.attach(2);
+  servo01.write(40);  // Bending pin UP
 
-// ------------ CONSTANTS ------------
-const int angleConst = 18;    // NEMA17 1.8° w/ DRV8825 1/32 microstep
-const int feedLength = 1000;  // steps per star segment
+  feederStepper.setMaxSpeed(2000);
+  zAxisStepper.setMaxSpeed(2000);
+  benderStepper.setMaxSpeed(2000);
 
-// -----------------------------------------------------
-// SAFETY: Check limit switch DURING motion
-// -----------------------------------------------------
-void checkLimitDuringMove() {
-  if (digitalRead(LIMIT_SWITCH) == LOW) { // switch hit
-    Serial.println("Limit hit during motion — Re-Homing...");
-    bender.stop();
-    delay(100);
-    // Re-home
-    while (digitalRead(LIMIT_SWITCH) == LOW) {
-      bender.setSpeed(-600);  // move off the switch
-      bender.runSpeed();
-    }
-    delay(100);
-    // Move slowly back to switch to set true zero
-    while (digitalRead(LIMIT_SWITCH) == HIGH) {
-      bender.setSpeed(400);
-      bender.runSpeed();
-    }
-    bender.setCurrentPosition(0);
-    Serial.println("Re-homed. Position reset to 0.");
+  // -------------------------
+  // HOMING SEQUENCE
+  // -------------------------
+  // Move until limit switch is hit
+  while (digitalRead(limitSwitch) != LOW) {
+    benderStepper.setSpeed(1200);    // toward switch
+    benderStepper.runSpeed();
   }
+
+  delay(50);
+
+  // Once switch is hit → set position
+  benderStepper.setCurrentPosition(0);
+
+  // Move BACKWARD 1400 steps to mechanical zero
+  while (benderStepper.currentPosition() > -1400) {
+    benderStepper.setSpeed(-1200);   // move away from switch
+    benderStepper.run();
+  }
+
+  // Now define this as ZERO
+  benderStepper.setCurrentPosition(0);
+
+  Serial.println("Homing complete. Beginning STAR mode.");
+  delay(500);
 }
 
-// -----------------------------------------------------
-// INITIAL HOMING FUNCTION
-// -----------------------------------------------------
-void homeBender() {
-  Serial.println("Initial Homing...");
+// -------------------------
+// MAIN LOOP
+// -------------------------
+void loop() {
+  // Start star bending immediately
+  star();
+  while (1);  // stop after one star
+}
 
-  // Move until switch is hit
-  while (digitalRead(LIMIT_SWITCH) == HIGH) {
-    bender.setSpeed(800);
-    bender.runSpeed();
-  }
+// -------------------------
+// STAR FUNCTION
+// -------------------------
+void star() {
 
-  // Move off the switch slightly
-  for (int i = 0; i < 300; i++) {
-    bender.setSpeed(-400);
-    bender.runSpeed();
-  }
+  int count = 0;
+  const int feedMM = 38;
+  const int feedConst = 48;
+  const int feedSteps = feedMM * feedConst;
 
-  // Approach slowly to get precise zero
-  while (digitalRead(LIMIT_SWITCH) == HIGH) {
-    bender.setSpeed(300);
-    bender.runSpeed();
-  }
+  const int angleConst = 18; // your machine's angle-to-step constant
 
-  bender.setCurrentPosition(0);
-  Serial.println("Homed. Bender = 0°");
+  servo01.write(40);   // bender pin UP
   delay(200);
-}
 
-// -----------------------------------------------------
-// MOVE BENDER TO ANGLE WITH SAFETY CHECKING
-// -----------------------------------------------------
-void bendTo(int angleDegrees) {
-  long target = angleDegrees * angleConst;
-  bender.moveTo(target);
+  while (count < 5) {
 
-  while (bender.distanceToGo() != 0) {
-    bender.run();
-    checkLimitDuringMove();  // <-- SAFETY CALL
-  }
-}
+    // ============================
+    // 1. FEED WIRE
+    // ============================
+    while (feederStepper.currentPosition() != feedSteps) {
+      feederStepper.setSpeed(1200);
+      feederStepper.run();
+    }
+    feederStepper.setCurrentPosition(0);
 
-// -----------------------------------------------------
-// FEED FORWARD
-// -----------------------------------------------------
-void feedWire(long steps) {
-  feeder.moveTo(feeder.currentPosition() + steps);
-  while (feeder.distanceToGo() != 0) {
-    feeder.run();
-  }
-}
-
-// -----------------------------------------------------
-// TWIST WIRE (OPTIONAL)
-// -----------------------------------------------------
-void rotateZ(long steps) {
-  twister.moveTo(twister.currentPosition() + steps);
-  while (twister.distanceToGo() != 0) {
-    twister.run();
-  }
-}
-
-// -----------------------------------------------------
-// 5-POINT STAR SEQUENCE
-// -----------------------------------------------------
-void makeStar() {
-  Serial.println("Starting star sequence...");
-
-  for (int i = 0; i < 5; i++) {
-    Serial.print("Bend #");
-    Serial.println(i + 1);
-
-    // 1. Feed wire forward
-    feedWire(feedLength);
-
-    // 2. Lower servo
-    bendServo.write(130);
-    delay(300);
-
-    // 3. Bend 144°
-    bendTo(144);
-
-    // 4. Lift servo
-    bendServo.write(40);
+    // ============================
+    // 2. FIRST BEND (52°)
+    // ============================
+    servo01.write(40);  // pin UP
     delay(200);
 
-    // 5. Return to 0°
-    bendTo(0);
+    while (benderStepper.currentPosition() != -52 * angleConst) {
+      benderStepper.setSpeed(-700);
+      benderStepper.run();
+    }
+    benderStepper.setCurrentPosition(0);
+    delay(120);
 
-    // 6. Optional Z-twist
-    rotateZ(200); // small twist to keep shape stable
+    // Return to straight
+    while (benderStepper.currentPosition() != 52 * angleConst) {
+      benderStepper.setSpeed(1200);
+      benderStepper.run();
+    }
+    benderStepper.setCurrentPosition(0);
+    delay(120);
+
+    // ============================
+    // 3. FEED AGAIN
+    // ============================
+    while (feederStepper.currentPosition() != feedSteps) {
+      feederStepper.setSpeed(1200);
+      feederStepper.run();
+    }
+    feederStepper.setCurrentPosition(0);
+    delay(100);
+
+    // ============================
+    // 4. STAR POINT SECOND BEND
+    // ============================
+    servo01.write(130); // pin DOWN
+    delay(200);
+
+    // Pre-bend offset
+    while (benderStepper.currentPosition() != -42 * angleConst) {
+      benderStepper.setSpeed(-1200);
+      benderStepper.run();
+    }
+    benderStepper.setCurrentPosition(0);
+    delay(200);
+
+    servo01.write(40); // pin UP
+    delay(200);
+
+    // Main sharp bend
+    while (benderStepper.currentPosition() != 105 * angleConst) {
+      benderStepper.setSpeed(700);
+      benderStepper.run();
+    }
+    benderStepper.setCurrentPosition(0);
+    delay(80);
+
+    // Return from sharp bend
+    while (benderStepper.currentPosition() != -63 * angleConst) {
+      benderStepper.setSpeed(-1200);
+      benderStepper.run();
+    }
+    benderStepper.setCurrentPosition(0);
+    delay(150);
+
+    servo01.write(130);  // bender down for stability
+
+    count++;
   }
 
-  Serial.println("Star completed!");
-}
-
-// -----------------------------------------------------
-// SETUP
-// -----------------------------------------------------
-void setup() {
-  Serial.begin(115200);
-
-  pinMode(LIMIT_SWITCH, INPUT_PULLUP);
-
-  bendServo.attach(SERVO_PIN);
-  bendServo.write(40); // start up
-
-  bender.setMaxSpeed(2000);
-  bender.setAcceleration(1500);
-
-  feeder.setMaxSpeed(1500);
-  feeder.setAcceleration(1200);
-
-  twister.setMaxSpeed(1500);
-  twister.setAcceleration(1200);
-
-  delay(500);
-
-  // HOME FIRST BEFORE ANY MOTION
-  homeBender();
-}
-
-// -----------------------------------------------------
-// LOOP
-// -----------------------------------------------------
-void loop() {
-  makeStar();
-  delay(3000); // pause then repeat
+  // End of star shape
+  servo01.write(40);  // pin up
+  feederStepper.setCurrentPosition(0);
+  benderStepper.setCurrentPosition(0);
+  Serial.println("Star complete!");
 }
