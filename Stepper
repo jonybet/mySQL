@@ -1,0 +1,82 @@
+#include <AccelStepper.h>
+#include <Servo.h>
+
+#define LIMIT_SWITCH 11   // your limit switch pin
+#define SERVO_PIN 2       // your bender servo
+
+// CHANGE PINS IF NEEDED (these are from your original code)
+AccelStepper benderStepper(AccelStepper::DRIVER, 9, 10);
+
+Servo benderServo;
+
+// Stepper conversion
+// NEMA17 = 200 steps/rev
+// DRV8825 = 1/32 microstepping = 6400 steps/rev
+// 1 degree = 6400 / 360 = 17.77 steps/degree -> ~18
+const int angleConst = 18;
+
+void homeBender() {
+  Serial.println("Homing bender...");
+  
+  // Move toward limit switch until triggered
+  while (digitalRead(LIMIT_SWITCH) != LOW) {
+    benderStepper.setSpeed(600);   // slow homing speed
+    benderStepper.runSpeed();
+  }
+
+  // Set current position as zero
+  benderStepper.setCurrentPosition(0);
+  Serial.println("Homed. Position = 0");
+  delay(300);
+}
+
+void moveBenderToAngle(int angle) {
+  long target = angle * angleConst;
+  benderStepper.moveTo(target);
+
+  while (benderStepper.distanceToGo() != 0) {
+    benderStepper.run();
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(LIMIT_SWITCH, INPUT_PULLUP);
+
+  benderServo.attach(SERVO_PIN);
+  benderServo.write(40);   // servo UP
+
+  benderStepper.setMaxSpeed(2000);
+  benderStepper.setAcceleration(1500);
+
+  delay(500);
+  homeBender();
+}
+
+void loop() {
+  // ---- TEST #1: 90 degrees forward ----
+  Serial.println("Servo DOWN");
+  benderServo.write(130);
+  delay(300);
+
+  Serial.println("Bender +90°");
+  moveBenderToAngle(90);
+  delay(300);
+
+  Serial.println("Back to 0");
+  moveBenderToAngle(0);
+  delay(600);
+
+  // ---- TEST #2: 90 degrees backward ----
+  Serial.println("Servo UP");
+  benderServo.write(40);
+  delay(300);
+
+  Serial.println("Bender -90°");
+  moveBenderToAngle(-90);
+  delay(300);
+
+  Serial.println("Back to 0");
+  moveBenderToAngle(0);
+  delay(600);
+}
